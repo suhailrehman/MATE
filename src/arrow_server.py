@@ -1,13 +1,18 @@
-from collections import defaultdict
+from collections import Counter, defaultdict
 import json
 import pathlib
 import pickle
+import math
 
 import pyarrow as pa
 import pyarrow.flight
 from traitlets import default
+import numpy as np
 
-from datasketch import MinHashLSHEnsemble, MinHash, LeanMinHash
+# from datasketch import MinHashLSHEnsemble, MinHash, LeanMinHash
+from index_generation import XASH
+
+
 
 class FlightServer(pa.flight.FlightServerBase):
 
@@ -18,11 +23,14 @@ class FlightServer(pa.flight.FlightServerBase):
         super(FlightServer, self).__init__(location, **kwargs)
         self._location = location
         self._repo = repo
-        self.hashes = {}
-        self.query_hashes = {} # Dict of hashes specifically to query (don't index)
-        self.threshold=default_threshold
-        self.num_perm = num_perm
-        self.lshe_index = MinHashLSHEnsemble(threshold=default_threshold, num_perm=num_perm)
+        # self.hashes = {}
+        # self.query_hashes = {} # Dict of hashes specifically to query (don't index)
+        # self.threshold=default_threshold
+        # self.num_perm = num_perm
+        # self.lshe_index = MinHashLSHEnsemble(threshold=default_threshold, num_perm=num_perm)
+        self.posting_list = defaultdict(list)
+        self.table_pl = {}
+        
         print(f'MATE server running in {location}')
         
         
@@ -47,72 +55,44 @@ class FlightServer(pa.flight.FlightServerBase):
     def get_flight_info(self, context, descriptor):
         return self._make_flight_info(descriptor.path[0].decode('utf-8'))
 
-    def hash_row_vals(self, hash_function: Any, row: Any, hash_size: int) -> None:
-        """Calculates Hash value for row.
+    def generate_hash_superkey(self, row, hash_function=XASH, hash_size=256):
+        superkey = 0
+        value_list = []
+        for colname, val in row.iteritems():
+            value = str(val)
+            superkey = superkey | hash_function(value, hash_size)
+            value_list.append((colname, value))
+        return superkey, value_list
 
-        Parameters
-        ----------
-        hash_function : Any
-            Hash function to use for hash calculation.
-
-        row : Any
-            Input row.
-
-        hash_size : int
-            Number of bits.
-
-        Returns
-        -------
-        int
-            Hash value for row.
-        """
-        hresult = 0
-        for q in row.columns:
-            d, hvalue = hash_function(row[q], hash_size)
-            hresult = hresult | hvalue
-        return hresult
+    def index_dataframe(self, df):
+        for idx, row in df.iterrows():
+            superkey, value_list = self.generate_hash_superkey(row)
+            yield idx, superkey, value_list
+            
+    def update_postinglist(self, posting_list):
+        for key, value in posting_list.items():
+            self.posting_list[key].extend(value)
+            
+            
+    def generate_posting_list(self, df, label='label'):
+        posting_list = defaultdict(list)
+        for idx, superkey, value_list in self.index_dataframe(df):
+            for colname, value in value_list:
+                posting_list[value].append((label, idx, colname, superkey))
+        self.update_postinglist(posting_list)
+        return posting_list
 
     def do_put(self, context, descriptor, reader, writer):
-        # dataset = descriptor.path[0].decode('utf-8')
-        # # Read the uploaded data and write to Parquet incrementally
-        # unique_value_dict = defaultdict(set)
-        # #print('Server: PUT:', dataset)
-        
-        # for chunk in reader:
-        #     current_df = pa.Table.from_batches([chunk.data]).to_pandas()
-        #     for column in current_df.columns:
-        #         for value in current_df[column].values:
-        #             unique_value_dict[column].add(value.encode('utf-8'))
-                    
-        # for key, valueset in unique_value_dict.items():
-        #     mh_obj = MinHash(num_perm=self.num_perm)
-        #     mh_obj.update_batch(list(valueset))
-        #     if '##QUERY##' in dataset:
-        #         self.query_hashes[key] = (LeanMinHash(mh_obj), len(valueset))
-        #     else:
-        #         #print('STORING: ', key)
-        #         self.hashes[key] = (LeanMinHash(mh_obj), len(valueset))
-
         # Get an entire table and generate XHASH 
-        dataset = descriptor.path[0].decode('utf-8')
+        df_label = descriptor.path[0].decode('utf-8')
         # Read the uploaded data and write to Parquet incrementally
-        unique_value_dict = defaultdict(set)
-        #print('Server: PUT:', dataset)
+        # print('Server: PUT:', df_label)
         
         for chunk in reader:
             current_df = pa.Table.from_batches([chunk.data]).to_pandas()
-            
-                    
-        for key, valueset in unique_value_dict.items():
-            mh_obj = MinHash(num_perm=self.num_perm)
-            mh_obj.update_batch(list(valueset))
-            if '##QUERY##' in dataset:
-                self.query_hashes[key] = (LeanMinHash(mh_obj), len(valueset))
-            else:
-                #print('STORING: ', key)
-                self.hashes[key] = (LeanMinHash(mh_obj), len(valueset))
-
-
+            posting_list = self.generate_posting_list(current_df, label=df_label)
+            self.table_pl[df_label]  =  posting_list
+            self.update_postinglist(posting_list)
 
 
     def do_get(self, context, ticket):
@@ -174,12 +154,12 @@ class FlightServer(pa.flight.FlightServerBase):
         elif action.type == "SERIALIZE":
             to_path = action.body.to_pybytes().decode('utf-8')
             with open(to_path, 'wb') as fp:
-                pickle.dump(self.hashes, fp)
+                pickle.dump((self.posting_list, self.table_pl), fp)
             result.append(f'Written out minhashes to {to_path}')
         elif action.type == "LOAD":
             from_path = action.body.to_pybytes().decode('utf-8')
             with open(from_path, 'rb') as fp:
-                self.hashes = pickle.load(fp)
+                self.posting_list, self.table_pl = pickle.load(fp)
             result.append(f'Loaded minhashes from {from_path}')
         elif action.type == "JC_MINHASH":
             key, q_key = action.body.to_pybytes().decode('utf-8').split(";;;;")

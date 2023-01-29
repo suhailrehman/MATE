@@ -1,4 +1,4 @@
-import vertica_python
+#import vertica_python
 import numpy as np
 import math
 from collections import Counter
@@ -55,52 +55,52 @@ def XASH(token: str, hash_size: int = 128) -> int:
 
     return result
 
-def generate_index(main_table: str = 'main_tokenized',
-                   super_key_column: str = 'super_key',
-                   hash_size: int = 128
-    ) -> None:
-    """Generates MATE index and stores it in DB.
+# def generate_index(main_table: str = 'main_tokenized',
+#                    super_key_column: str = 'super_key',
+#                    hash_size: int = 128
+#     ) -> None:
+#     """Generates MATE index and stores it in DB.
 
-    Parameters
-    ----------
-    main_table : str
-        Main inverted index table.
+#     Parameters
+#     ----------
+#     main_table : str
+#         Main inverted index table.
         
-    super_key_column : str
+#     super_key_column : str
 
-    hash_size : int
-        Number of bits.
-    """
-    conn_info = {
-        'host': 'SERVER_IP_ADDRESS',
-        'port': 5433,
-         'user': 'USERNAME',
-         'password': 'PASSWORD',
-         'database': 'DATABASE_NAME',
-         'session_label': 'some_label',
-         'read_timeout': 6000,
-         'unicode_error': 'strict',
-    }
+#     hash_size : int
+#         Number of bits.
+#     """
+#     conn_info = {
+#         'host': 'SERVER_IP_ADDRESS',
+#         'port': 5433,
+#          'user': 'USERNAME',
+#          'password': 'PASSWORD',
+#          'database': 'DATABASE_NAME',
+#          'session_label': 'some_label',
+#          'read_timeout': 6000,
+#          'unicode_error': 'strict',
+#     }
 
-    connection = vertica_python.connect(**conn_info)
-    cur = connection.cursor()
-    cur.execute(f'SELECT tableid, MAX(rowid) FROM {main_table} GROUP BY tableid;')
+#     connection = vertica_python.connect(**conn_info)
+#     cur = connection.cursor()
+#     cur.execute(f'SELECT tableid, MAX(rowid) FROM {main_table} GROUP BY tableid;')
 
-    for row in cur.fetchall():
-        table_id = int(row[0])
-        rowid_max = int(row[1])
-        for rowid in np.arange(rowid_max):
-            cur.execute(f'SELECT tokenized FROM {main_table} WHERE tableid = {table_id} AND rowid = {rowid};')
+#     for row in cur.fetchall():
+#         table_id = int(row[0])
+#         rowid_max = int(row[1])
+#         for rowid in np.arange(rowid_max):
+#             cur.execute(f'SELECT tokenized FROM {main_table} WHERE tableid = {table_id} AND rowid = {rowid};')
 
-            row_tokens = cur.fetchall()
-            row_tokens = [item for sublist in row_tokens for item in sublist]
+#             row_tokens = cur.fetchall()
+#             row_tokens = [item for sublist in row_tokens for item in sublist]
 
-            super_key = 0
-            for token in row_tokens:
-                super_key = super_key | XASH(str(token), hash_size)
+#             super_key = 0
+#             for token in row_tokens:
+#                 super_key = super_key | XASH(str(token), hash_size)
 
-            cur.execute(f'UPDATE main_tokenized SET {super_key_column} = {super_key} '
-                        f'WHERE tableid = {table_id} AND rowid = {rowid}; '
-                        f'COMMIT;')
+#             cur.execute(f'UPDATE main_tokenized SET {super_key_column} = {super_key} '
+#                         f'WHERE tableid = {table_id} AND rowid = {rowid}; '
+#                         f'COMMIT;')
 
-generate_index()
+# generate_index()
